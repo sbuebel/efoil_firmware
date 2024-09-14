@@ -1,5 +1,4 @@
 #include <SPI.h>
-#include <nRF24L01.h>
 #include <RF24.h>
 
 #include <Wire.h>
@@ -9,8 +8,7 @@
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 64
 
-#define LOOP_DELAY_US 4000  // 250Hz
-#define RADIO_LOOP_HZ 10
+#define LOOP_DELAY_US 20000  // 50Hz
 
 /*
 
@@ -60,13 +58,14 @@ int CHARGE_DETECT_PIN = 6;
 // CE, CSN
 RF24 radio(7, 8);
 
-const byte address[6] = "00001";
+const byte address[6] = "tx069";
 
 // Create an instance of the display
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-void setup() {
-  pinMode(5, OUTPUT);
+void setup() {  
+  Serial.begin(115200);
+  while (!Serial);
 
   // Initialize the display
   if(!display.begin(0x3C, 0x3C)) { // Check if the display is connected
@@ -74,67 +73,63 @@ void setup() {
     for(;;); // TODO: flash an LED here or something
   }
 
-  // // todo: kill this
+  // todo: kill this
   display.display(); // Show initial splash screen
-  delay(2000); // Pause for 2 seconds
-
   display.clearDisplay(); // Clear the display buffer
-  
-  Serial.begin(115200);
 
-  radio.begin();
-  radio.openWritingPipe(address);
-  radio.setPALevel(RF24_PA_MIN);  // TODO: change to high if needed
-  radio.stopListening();
+  if (!radio.begin()) {
+    Serial.println(F("radio hardware is not responding!!"));
+    while (1) {}  // hold in infinite loop
+  }
+  radio.setPALevel(RF24_PA_LOW);  // RF24_PA_MAX is default.
+  radio.setAutoAck(false);
+  radio.setPayloadSize(sizeof(eFoilCommandPacket));
+  radio.openWritingPipe(address);  // always uses pipe 0
+  radio.stopListening();  // put radio in TX mode
 }
 
 void loop() {
-  /*
-
-  Timing:
-
-  0us      1000us     2000us     3000us     4000us (end)
-  |----------|----------|----------|----------|
-  |          |          |          |          |
-  [] <- motor start
-            [] <- min pulse
-                        [] <- max pulse
-   [         ] <- free time (read from radio?)
-             [**********] <- block for motor command?
-                        [                      ] <- free time (control display)
-
-  */
+  static uint8_t loop_count = 0;
   uint32_t _start = micros();
   uint16_t speedCmd = 1000 + map(analogRead(A0), 500, 600, 0, 1000);
 
   eFoilCommandPacket cmd;
   cmd.speed = speedCmd;
   cmd.state = 1;  // TODO: state machine
-  cmd.remoteBattery = 4110;  // analogRead(A4); map it!
-  cmd.rssi = 100;
-  radio.write(&cmd, sizeof(cmd));
+  cmd.remoteBattery = 4110;  // analogRead(A4?); map it!
+  cmd.rssi = 100;  // TODO if we care
 
+  radio.writeFast( &cmd, sizeof(cmd) );
 
-  // display.clearDisplay(); // Clear the display buffer
+  uint32_t _radio_time = micros() - _start;
 
-  // Draw text
-  // display.setTextSize(1);      // Set text size
-  // display.setTextColor(SSD1306_WHITE); // Set text color
-  // display.setCursor(0, 0);     // Set cursor to the top-left corner
-  // const char speed[100];
-  // sprintf(speed, "%d", speedCmd);
-  // display.println(speedCmd); // Print text
-  // display.display(); // Update the display with the drawn content
+  if (loop_count % 10 == 0)
+  {
+    display.clearDisplay(); // Clear the display buffer
 
-  // simplest possible write to speed controller
-  digitalWrite(5, HIGH);
-  Serial.println(speedCmd);
+    // Draw text
+    display.setTextSize(1);      // Set text size
+    display.setTextColor(SSD1306_WHITE); // Set text color
+    display.setCursor(0, 0);     // Set cursor to the top-left corner
+    const char speed[100];
+    sprintf(speed, "Speed: %d", speedCmd);
+    display.println(speed); // Print text
+    display.setCursor(0, 10);
+    sprintf(speed, "RadioTime: %d", _radio_time);
+    display.println(speed); // Print text
 
-  while (micros() - _start < speedCmd)
+    display.display(); // Update the display with the drawn content
+  }
+
+  Serial.println(micros() - _start);
+
+  bool fast = 0;
+  while (micros() - _start < LOOP_DELAY_US) {
     delayMicroseconds(1);
+    fast = 1;
+  }
+  if (!fast)
+    Serial.println("too slow gee");
   
-  digitalWrite(5, LOW);
-
-  while (micros() - _start < LOOP_DELAY_US)
-    delayMicroseconds(1);
+  loop_count ++;
 }
